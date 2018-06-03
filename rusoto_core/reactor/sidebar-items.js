@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["CredentialsProvider","A credentials provider backed by an implicit event loop."],["CredentialsProviderFuture","Future returned from `CredentialsProvider`."],["RequestDispatcher","A request dispatcher backed by an implicit event loop."],["RequestDispatcherFuture","Future returned from `RequestDispatcher`."]]});
