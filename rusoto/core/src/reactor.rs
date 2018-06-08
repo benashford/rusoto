@@ -22,7 +22,6 @@ use std::time::Duration;
 use futures::future::{empty, ok, Either};
 use futures::sync::{mpsc, oneshot};
 use futures::{Async, Future, Poll, Stream};
-use tokio_core::reactor::{Core, Handle, Remote};
 
 use super::{
     AwsCredentials, CredentialsError, DefaultCredentialsProvider, DispatchSignedRequest,
@@ -35,34 +34,39 @@ lazy_static! {
 }
 
 struct Reactor {
-    remote: Remote,
+    // TODO - re-enable possibly
+// remote: Remote,
 }
 
 impl Reactor {
     fn spawn() -> IoResult<Reactor> {
-        let (init_tx, init_rx) = oneshot::channel();
+        // TODO _ re-enable
+        //
+        // let (init_tx, init_rx) = oneshot::channel();
 
-        thread::spawn(move || {
-            let mut core = match Core::new() {
-                Ok(core) => {
-                    if let Err(_) = init_tx.send(Ok(core.remote())) {
-                        panic!("failed to send init back to caller");
-                    }
-                    core
-                }
-                Err(err) => {
-                    if let Err(_) = init_tx.send(Err(err)) {
-                        panic!("failed to send init back to caller");
-                    }
-                    return;
-                }
-            };
+        // thread::spawn(move || {
+        //     let mut core = match Core::new() {
+        //         Ok(core) => {
+        //             if let Err(_) = init_tx.send(Ok(core.remote())) {
+        //                 panic!("failed to send init back to caller");
+        //             }
+        //             core
+        //         }
+        //         Err(err) => {
+        //             if let Err(_) = init_tx.send(Err(err)) {
+        //                 panic!("failed to send init back to caller");
+        //             }
+        //             return;
+        //         }
+        //     };
 
-            core.run(empty::<(), ()>()).unwrap();
-        });
+        //     core.run(empty::<(), ()>()).unwrap();
+        // });
 
-        let remote = init_rx.wait().expect("failed to initiate reactor")?;
-        Ok(Reactor { remote: remote })
+        // let remote = init_rx.wait().expect("failed to initiate reactor")?;
+        // Ok(Reactor { remote: remote })
+
+        unimplemented!()
     }
 }
 
@@ -226,39 +230,43 @@ impl Reactor {
         U::Item: Send + 'static,
         U::Error: Send + 'static,
     {
-        let (init_tx, init_rx) = oneshot::channel();
+        // TODO - re-implement
+        //
+        // let (init_tx, init_rx) = oneshot::channel();
 
-        self.remote.spawn(move || {
-            let (tx, rx) = mpsc::unbounded::<(T, oneshot::Sender<Result<U::Item, U::Error>>)>();
+        // self.remote.spawn(move || {
+        //     let (tx, rx) = mpsc::unbounded::<(T, oneshot::Sender<Result<U::Item, U::Error>>)>();
 
-            let responder = match make_responder() {
-                Ok(responder) => {
-                    if let Err(_) = init_tx.send(Ok(tx)) {
-                        panic!("failed to send back reactor");
-                    }
-                    Rc::new(responder)
-                }
-                Err(err) => {
-                    if let Err(_) = init_tx.send(Err(err)) {
-                        panic!("failed to send back reactor");
-                    }
-                    return Either::A(ok(()));
-                }
-            };
+        //     let responder = match make_responder() {
+        //         Ok(responder) => {
+        //             if let Err(_) = init_tx.send(Ok(tx)) {
+        //                 panic!("failed to send back reactor");
+        //             }
+        //             Rc::new(responder)
+        //         }
+        //         Err(err) => {
+        //             if let Err(_) = init_tx.send(Err(err)) {
+        //                 panic!("failed to send back reactor");
+        //             }
+        //             return Either::A(ok(()));
+        //         }
+        //     };
 
-            let handle = handle_ref.clone();
-            Either::B(rx.for_each(move |(request, response_sender)| {
-                let responder = responder.clone();
-                handle.spawn_fn(move || {
-                    ((responder)(request)).then(move |result| {
-                        response_sender.send(result).ok();
-                        Ok(())
-                    })
-                });
-                Ok(())
-            }))
-        });
+        //     let handle = handle_ref.clone();
+        //     Either::B(rx.for_each(move |(request, response_sender)| {
+        //         let responder = responder.clone();
+        //         handle.spawn_fn(move || {
+        //             ((responder)(request)).then(move |result| {
+        //                 response_sender.send(result).ok();
+        //                 Ok(())
+        //             })
+        //         });
+        //         Ok(())
+        //     }))
+        // });
 
-        init_rx.wait().expect("failed to initiate reactor")
+        // init_rx.wait().expect("failed to initiate reactor")
+
+        unimplemented!()
     }
 }

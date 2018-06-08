@@ -9,14 +9,14 @@ use std::env;
 use std::error::Error;
 use std::fmt;
 use std::io;
-use std::io::Error as IoError;
+use std::io::{Cursor, Error as IoError};
 use std::mem;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::{Either, Select2};
 use futures::{Async, Future, Poll, Stream};
+use hyper::body::Payload;
 use hyper::client::connect::Connect;
 use hyper::client::{HttpConnector, ResponseFuture as HyperFutureResponse};
 use hyper::header::{HeaderMap as HyperHeaders, HeaderValue};
@@ -27,7 +27,8 @@ use hyper::{
     Response as HyperResponse,
 };
 use hyper_tls::HttpsConnector;
-use tokio_core::reactor::{Handle, Timeout};
+
+use tokio::timer::Deadline;
 
 use log::Level::Debug;
 
@@ -156,7 +157,7 @@ impl HttpResponse {
             )
         }));
         let body = hyper_response
-            .body()
+            .into_body()
             .map(|chunk| chunk.as_ref().to_vec())
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err));
 
@@ -229,7 +230,7 @@ pub struct HttpClientFuture(ClientFutureInner);
 
 enum ClientFutureInner {
     Hyper(HyperFutureResponse),
-    HyperWithTimeout(Select2<HyperFutureResponse, Timeout>),
+    HyperWithTimeout(Deadline<HyperFutureResponse>),
     Error(String),
 }
 
@@ -247,15 +248,16 @@ impl Future for HttpClientFuture {
             }
             ClientFutureInner::HyperWithTimeout(ref mut select_future) => {
                 match select_future.poll() {
-                    Err(Either::A((hyper_err, _))) => Err(hyper_err.into()),
-                    Err(Either::B((io_err, _))) => Err(io_err.into()),
                     Ok(Async::NotReady) => Ok(Async::NotReady),
-                    Ok(Async::Ready(Either::A((hyper_res, _)))) => {
+                    Ok(Async::Ready(hyper_res)) => {
                         Ok(Async::Ready(HttpResponse::from_hyper(hyper_res)))
                     }
-                    Ok(Async::Ready(Either::B(((), _)))) => Err(HttpDispatchError {
-                        message: "Request timed out".into(),
-                    }),
+                    Err(de) => match de.into_inner() {
+                        Some(e) => Err(e.into()),
+                        None => Err(HttpDispatchError {
+                            message: "Request timed out".into(),
+                        }),
+                    },
                 }
             }
         }
@@ -284,6 +286,16 @@ impl Stream for HttpClientPayload {
     }
 }
 
+impl Payload for HttpClientPayload {
+    type Data = Cursor<Vec<u8>>;
+    type Error = io::Error;
+
+    fn poll_data(&mut self) -> Poll<Option<Self::Data>, Self::Error> {
+        self.poll()
+            .map(|async| async.map(|opt| opt.map(|data| Cursor::new(data))))
+    }
+}
+
 /// Http client for use with AWS services.
 pub struct HttpClient<C = HttpsConnector<HttpConnector>> {
     inner: HyperClient<C, HttpClientPayload>,
@@ -307,11 +319,11 @@ impl HttpClient {
 
 impl<C> HttpClient<C>
 where
-    C: Connect,
+    C: Connect + 'static,
 {
     /// Allows for a custom connector to be used with the HttpClient
     pub fn from_connector(connector: C) -> Self {
-        let inner = HyperClient::configure().body().connector(connector).build();
+        let inner = HyperClient::builder().build(connector);
 
         HttpClient { inner }
     }
@@ -321,111 +333,115 @@ impl<C: Connect> DispatchSignedRequest for HttpClient<C> {
     type Future = HttpClientFuture;
 
     fn dispatch(&self, request: SignedRequest, timeout: Option<Duration>) -> Self::Future {
-        let hyper_method = match request.method().as_ref() {
-            "POST" => Method::POST,
-            "PUT" => Method::PUT,
-            "DELETE" => Method::DELETE,
-            "GET" => Method::GET,
-            "HEAD" => Method::HEAD,
-            v => {
-                return HttpClientFuture(ClientFutureInner::Error(format!(
-                    "Unsupported HTTP verb {}",
-                    v
-                )))
-            }
-        };
+        // TODO - re-enable
+        //
+        // let hyper_method = match request.method().as_ref() {
+        //     "POST" => Method::POST,
+        //     "PUT" => Method::PUT,
+        //     "DELETE" => Method::DELETE,
+        //     "GET" => Method::GET,
+        //     "HEAD" => Method::HEAD,
+        //     v => {
+        //         return HttpClientFuture(ClientFutureInner::Error(format!(
+        //             "Unsupported HTTP verb {}",
+        //             v
+        //         )))
+        //     }
+        // };
 
-        // translate the headers map to a format Hyper likes
-        let mut hyper_headers = HyperHeaders::new();
-        for h in request.headers().iter() {
-            if h.1.is_empty() {
-                continue;
-            }
-            let header = match h.0.parse() {
-                Ok(header) => header,
-                Err(e) => {
-                    return HttpClientFuture(ClientFutureInner::Error(format!(
-                        "Invalid header: {}",
-                        h.0
-                    )))
-                }
-            };
-            let value = match HeaderValue::from_bytes(&h.1[0]) {
-                Ok(value) => value,
-                Err(e) => {
-                    return HttpClientFuture(ClientFutureInner::Error(format!(
-                        "Invalid header value: {}",
-                        e
-                    )))
-                }
-            };
-            hyper_headers.insert(header, value);
-        }
+        // // translate the headers map to a format Hyper likes
+        // let mut hyper_headers = HyperHeaders::new();
+        // for h in request.headers().iter() {
+        //     if h.1.is_empty() {
+        //         continue;
+        //     }
+        //     let header = match h.0.parse() {
+        //         Ok(header) => header,
+        //         Err(e) => {
+        //             return HttpClientFuture(ClientFutureInner::Error(format!(
+        //                 "Invalid header: {}",
+        //                 h.0
+        //             )))
+        //         }
+        //     };
+        //     let value = match HeaderValue::from_bytes(&h.1[0]) {
+        //         Ok(value) => value,
+        //         Err(e) => {
+        //             return HttpClientFuture(ClientFutureInner::Error(format!(
+        //                 "Invalid header value: {}",
+        //                 e
+        //             )))
+        //         }
+        //     };
+        //     hyper_headers.insert(header, value);
+        // }
 
-        // Add a default user-agent header if one is not already present.
-        if let Entry::Vacant(v) = hyper_headers.entry(
-            "user-agent"
-                .parse()
-                .expect("user-agent not recognised as valid header"),
-        ) {
-            v.insert(DEFAULT_USER_AGENT.clone());
-        }
+        // // Add a default user-agent header if one is not already present.
+        // if let Entry::Vacant(v) = hyper_headers.entry(
+        //     "user-agent"
+        //         .parse()
+        //         .expect("user-agent not recognised as valid header"),
+        // ) {
+        //     v.insert(DEFAULT_USER_AGENT.clone());
+        // }
 
-        let mut final_uri = format!(
-            "{}://{}{}",
-            request.scheme(),
-            request.hostname(),
-            request.canonical_path()
-        );
-        if !request.canonical_query_string().is_empty() {
-            final_uri = final_uri + &format!("?{}", request.canonical_query_string());
-        }
+        // let mut final_uri = format!(
+        //     "{}://{}{}",
+        //     request.scheme(),
+        //     request.hostname(),
+        //     request.canonical_path()
+        // );
+        // if !request.canonical_query_string().is_empty() {
+        //     final_uri = final_uri + &format!("?{}", request.canonical_query_string());
+        // }
 
-        if log_enabled!(Debug) {
-            let payload = match request.payload {
-                Some(SignedRequestPayload::Buffer(ref payload_bytes)) => {
-                    String::from_utf8(payload_bytes.to_owned())
-                        .unwrap_or_else(|_| String::from("<non-UTF-8 data>"))
-                }
-                Some(SignedRequestPayload::Stream(len, _)) => {
-                    format!("<stream len_hint={:?}>", len)
-                }
-                None => "".to_owned(),
-            };
+        // if log_enabled!(Debug) {
+        //     let payload = match request.payload {
+        //         Some(SignedRequestPayload::Buffer(ref payload_bytes)) => {
+        //             String::from_utf8(payload_bytes.to_owned())
+        //                 .unwrap_or_else(|_| String::from("<non-UTF-8 data>"))
+        //         }
+        //         Some(SignedRequestPayload::Stream(len, _)) => {
+        //             format!("<stream len_hint={:?}>", len)
+        //         }
+        //         None => "".to_owned(),
+        //     };
 
-            debug!(
-                "Full request: \n method: {}\n final_uri: {}\n payload: {}\nHeaders:\n",
-                hyper_method, final_uri, payload
-            );
-            for h in hyper_headers.iter() {
-                debug!("{}:{}", h.name(), h.value_string());
-            }
-        }
+        //     debug!(
+        //         "Full request: \n method: {}\n final_uri: {}\n payload: {}\nHeaders:\n",
+        //         hyper_method, final_uri, payload
+        //     );
+        //     for h in hyper_headers.iter() {
+        //         debug!("{}:{}", h.name(), h.value_string());
+        //     }
+        // }
 
-        let mut hyper_request =
-            HyperRequest::new(hyper_method, final_uri.parse().expect("error parsing uri"));
-        *hyper_request.headers_mut() = hyper_headers;
+        // let mut hyper_request =
+        //     HyperRequest::new(hyper_method, final_uri.parse().expect("error parsing uri"));
+        // *hyper_request.headers_mut() = hyper_headers;
 
-        if let Some(payload_contents) = request.payload {
-            hyper_request.set_body(HttpClientPayload {
-                inner: payload_contents,
-            });
-        }
+        // if let Some(payload_contents) = request.payload {
+        //     hyper_request.set_body(HttpClientPayload {
+        //         inner: payload_contents,
+        //     });
+        // }
 
-        let inner = match timeout {
-            None => ClientFutureInner::Hyper(self.inner.request(hyper_request)),
-            Some(duration) => match Timeout::new(duration, &self.handle) {
-                Err(err) => {
-                    ClientFutureInner::Error(format!("Error creating timeout future {}", err))
-                }
-                Ok(timeout_future) => {
-                    let future = self.inner.request(hyper_request).select2(timeout_future);
-                    ClientFutureInner::HyperWithTimeout(future)
-                }
-            },
-        };
+        // let inner = match timeout {
+        //     None => ClientFutureInner::Hyper(self.inner.request(hyper_request)),
+        //     Some(duration) => match Timeout::new(duration, &self.handle) {
+        //         Err(err) => {
+        //             ClientFutureInner::Error(format!("Error creating timeout future {}", err))
+        //         }
+        //         Ok(timeout_future) => {
+        //             let future = self.inner.request(hyper_request).select2(timeout_future);
+        //             ClientFutureInner::HyperWithTimeout(future)
+        //         }
+        //     },
+        // };
 
-        HttpClientFuture(inner)
+        // HttpClientFuture(inner)
+
+        unimplemented!()
     }
 }
 
