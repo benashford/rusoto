@@ -1,7 +1,9 @@
-#![doc(html_logo_url = "https://raw.githubusercontent.com/rusoto/rusoto/master/assets/logo-square.png")]
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/rusoto/rusoto/master/assets/logo-square.png"
+)]
 #![cfg_attr(feature = "nightly-testing", feature(plugin))]
 #![cfg_attr(feature = "nightly-testing", plugin(clippy))]
-#![cfg_attr(not(feature = "unstable"), deny(warnings))]
+// #![cfg_attr(not(feature = "unstable"), deny(warnings))] - TODO - re-enable
 #![deny(missing_docs)]
 
 //! Types for loading and managing AWS access credentials for API requests.
@@ -9,45 +11,47 @@
 extern crate chrono;
 #[macro_use]
 extern crate futures;
+extern crate http;
 extern crate hyper;
 extern crate hyper_tls;
 extern crate regex;
 extern crate serde_json;
-extern crate tokio_core;
+extern crate tokio;
 
-pub use environment::{EnvironmentProvider, EnvironmentProviderFuture};
 pub use container::{ContainerProvider, ContainerProviderFuture};
-pub use static_provider::StaticProvider;
+pub use environment::{EnvironmentProvider, EnvironmentProviderFuture};
 pub use instance_metadata::{InstanceMetadataProvider, InstanceMetadataProviderFuture};
 pub use profile::{ProfileProvider, ProfileProviderFuture};
+pub use static_provider::StaticProvider;
 
-mod request;
+pub mod claims;
 mod container;
 mod environment;
-mod static_provider;
 mod instance_metadata;
 mod profile;
+mod request;
+mod static_provider;
 pub(crate) mod test_utils;
-pub mod claims;
 
-use std::env::var as env_var;
-use std::fmt;
-use std::error::Error;
-use std::io::Error as IoError;
-use std::ops::Deref;
-use std::sync::{Arc, Mutex};
-use std::rc::Rc;
-use std::time::Duration;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::env::var as env_var;
+use std::error::Error;
+use std::fmt;
+use std::io::Error as IoError;
+use std::ops::Deref;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::{DateTime, Duration as ChronoDuration, ParseError, Utc};
-use futures::{Async, Future, Poll};
 use futures::future::{err, Either, Shared, SharedItem};
+use futures::{Async, Future, Poll};
+use http::header::InvalidHeaderValue;
+use http::uri::InvalidUri;
+use http::Error as HttpError;
 use hyper::Error as HyperError;
-use hyper::error::UriError;
 use serde_json::{from_str as json_from_str, Value};
-use tokio_core::reactor::Handle;
 
 /// AWS API access credentials, including access key, secret key, token (for IAM profiles),
 /// expiration timestamp, and claims from federated login.
@@ -184,8 +188,20 @@ impl From<IoError> for CredentialsError {
     }
 }
 
-impl From<UriError> for CredentialsError {
-    fn from(err: UriError) -> CredentialsError {
+impl From<InvalidUri> for CredentialsError {
+    fn from(err: InvalidUri) -> CredentialsError {
+        CredentialsError::new(err.description())
+    }
+}
+
+impl From<InvalidHeaderValue> for CredentialsError {
+    fn from(err: InvalidHeaderValue) -> CredentialsError {
+        CredentialsError::new(err.description())
+    }
+}
+
+impl From<HttpError> for CredentialsError {
+    fn from(err: HttpError) -> CredentialsError {
         CredentialsError::new(err.description())
     }
 }
@@ -324,7 +340,8 @@ impl<P: ProvideAwsCredentials + 'static> ProvideAwsCredentials for AutoRefreshin
     type Future = AutoRefreshingProviderFuture<P>;
 
     fn credentials(&self) -> Self::Future {
-        let mut shared_future = self.shared_future
+        let mut shared_future = self
+            .shared_future
             .lock()
             .expect("Failed to lock the cached credentials Mutex");
         AutoRefreshingProviderFuture {
@@ -379,8 +396,8 @@ pub type DefaultCredentialsProvider = AutoRefreshingProvider<ChainProvider>;
 impl DefaultCredentialsProvider {
     /// Creates a new DefaultCredentials Provider. If you're looking for
     /// Thread Safety look at DefaultCredentialsProviderSync.
-    pub fn new(handle: &Handle) -> Result<DefaultCredentialsProvider, CredentialsError> {
-        AutoRefreshingProvider::with_refcell(ChainProvider::new(handle))
+    pub fn new() -> Result<DefaultCredentialsProvider, CredentialsError> {
+        AutoRefreshingProvider::with_refcell(ChainProvider::new())
     }
 }
 
@@ -397,8 +414,8 @@ pub type DefaultCredentialsProviderSync = AutoRefreshingProviderSync<ChainProvid
 
 impl DefaultCredentialsProviderSync {
     /// Creates a new Thread Safe Default Credentials Provider.
-    pub fn new(handle: &Handle) -> Result<DefaultCredentialsProviderSync, CredentialsError> {
-        AutoRefreshingProviderSync::with_mutex(ChainProvider::new(handle))
+    pub fn new() -> Result<DefaultCredentialsProviderSync, CredentialsError> {
+        AutoRefreshingProviderSync::with_mutex(ChainProvider::new())
     }
 }
 
@@ -493,23 +510,20 @@ impl ProvideAwsCredentials for ChainProvider {
 
 impl ChainProvider {
     /// Create a new `ChainProvider` using a `ProfileProvider` with the default settings.
-    pub fn new(handle: &Handle) -> ChainProvider {
+    pub fn new() -> ChainProvider {
         ChainProvider {
             profile_provider: ProfileProvider::new().ok(),
-            instance_metadata_provider: InstanceMetadataProvider::new(handle),
-            container_provider: ContainerProvider::new(handle),
+            instance_metadata_provider: InstanceMetadataProvider::new(),
+            container_provider: ContainerProvider::new(),
         }
     }
 
     /// Create a new `ChainProvider` using the provided `ProfileProvider`.
-    pub fn with_profile_provider(
-        handle: &Handle,
-        profile_provider: ProfileProvider,
-    ) -> ChainProvider {
+    pub fn with_profile_provider(profile_provider: ProfileProvider) -> ChainProvider {
         ChainProvider {
             profile_provider: Some(profile_provider),
-            instance_metadata_provider: InstanceMetadataProvider::new(handle),
-            container_provider: ContainerProvider::new(handle),
+            instance_metadata_provider: InstanceMetadataProvider::new(),
+            container_provider: ContainerProvider::new(),
         }
     }
 }
@@ -533,7 +547,8 @@ fn extract_string_value_from_json(
     key: &str,
 ) -> Result<String, CredentialsError> {
     match json_object.get(key) {
-        Some(v) => Ok(v.as_str()
+        Some(v) => Ok(v
+            .as_str()
             .expect(&format!("{} value was not a string", key))
             .to_owned()),
         None => Err(CredentialsError::new(format!(
@@ -582,8 +597,8 @@ extern crate quickcheck;
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
     use std::fs::{self, File};
+    use std::io::Read;
     use std::path::Path;
 
     use futures::Future;

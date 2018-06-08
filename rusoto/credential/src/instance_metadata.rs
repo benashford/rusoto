@@ -2,14 +2,12 @@
 
 use std::time::Duration;
 
+use futures::future::{result, FutureResult};
 use futures::{Future, Poll};
-use futures::future::{FutureResult, result};
-use hyper::{Uri, Request, Method};
-use tokio_core::reactor::Handle;
+use hyper::{Body, Method, Request, Uri};
 
-use {AwsCredentials, CredentialsError, ProvideAwsCredentials,
-     parse_credentials_from_aws_service};
 use request::{HttpClient, HttpClientFuture};
+use {parse_credentials_from_aws_service, AwsCredentials, CredentialsError, ProvideAwsCredentials};
 
 const AWS_CREDENTIALS_PROVIDER_IP: &str = "169.254.169.254";
 const AWS_CREDENTIALS_PROVIDER_PATH: &str = "latest/meta-data/iam/security-credentials";
@@ -43,16 +41,16 @@ const AWS_CREDENTIALS_PROVIDER_PATH: &str = "latest/meta-data/iam/security-crede
 #[derive(Clone, Debug)]
 pub struct InstanceMetadataProvider {
     client: HttpClient,
-    timeout: Duration
+    timeout: Duration,
 }
 
 impl InstanceMetadataProvider {
     /// Create a new provider with the given handle.
-    pub fn new(handle: &Handle) -> Self {
-        let client = HttpClient::new(handle);
+    pub fn new() -> Self {
+        let client = HttpClient::new();
         InstanceMetadataProvider {
             client: client,
-            timeout: Duration::from_secs(30)
+            timeout: Duration::from_secs(30),
         }
     }
 
@@ -66,14 +64,14 @@ enum InstanceMetadataFutureState {
     Start,
     GetRoleName(HttpClientFuture),
     GetCredentialsFromRole(HttpClientFuture),
-    Done(FutureResult<AwsCredentials, CredentialsError>)
+    Done(FutureResult<AwsCredentials, CredentialsError>),
 }
 
 /// Future returned from `InstanceMetadataProvider`.
 pub struct InstanceMetadataProviderFuture {
     state: InstanceMetadataFutureState,
     client: HttpClient,
-    timeout: Duration
+    timeout: Duration,
 }
 
 impl Future for InstanceMetadataProviderFuture {
@@ -90,15 +88,14 @@ impl Future for InstanceMetadataProviderFuture {
                 let role_name = try_ready!(future.poll());
                 let new_future = get_credentials_from_role(&self.client, self.timeout, &role_name)?;
                 InstanceMetadataFutureState::GetCredentialsFromRole(new_future)
-            },
+            }
             InstanceMetadataFutureState::GetCredentialsFromRole(ref mut future) => {
                 let cred_str = try_ready!(future.poll());
                 let new_future = result(parse_credentials_from_aws_service(&cred_str));
                 InstanceMetadataFutureState::Done(new_future)
-            },
+            }
             InstanceMetadataFutureState::Done(ref mut future) => {
                 return future.poll();
-          
             }
         };
         self.state = new_state;
@@ -113,35 +110,43 @@ impl ProvideAwsCredentials for InstanceMetadataProvider {
         InstanceMetadataProviderFuture {
             state: InstanceMetadataFutureState::Start,
             client: self.client.clone(),
-            timeout: self.timeout
+            timeout: self.timeout,
         }
     }
 }
 
 /// Gets the role name to get credentials for using the IAM Metadata Service (169.254.169.254).
-fn get_role_name(client: &HttpClient, timeout: Duration) -> Result<HttpClientFuture, CredentialsError> {
+fn get_role_name(
+    client: &HttpClient,
+    timeout: Duration,
+) -> Result<HttpClientFuture, CredentialsError> {
     let role_name_address = format!(
         "http://{}/{}/",
-        AWS_CREDENTIALS_PROVIDER_IP,
-        AWS_CREDENTIALS_PROVIDER_PATH
+        AWS_CREDENTIALS_PROVIDER_IP, AWS_CREDENTIALS_PROVIDER_PATH
     );
     let uri = role_name_address.parse::<Uri>()?;
-    Ok(client.request(Request::new(Method::Get, uri), timeout))
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::empty())?;
+    Ok(client.request(req, timeout))
 }
 
 /// Gets the credentials for an EC2 Instances IAM Role.
 fn get_credentials_from_role(
     client: &HttpClient,
     timeout: Duration,
-    role_name: &str
+    role_name: &str,
 ) -> Result<HttpClientFuture, CredentialsError> {
     let credentials_provider_url = format!(
         "http://{}/{}/{}",
-        AWS_CREDENTIALS_PROVIDER_IP,
-        AWS_CREDENTIALS_PROVIDER_PATH,
-        role_name
+        AWS_CREDENTIALS_PROVIDER_IP, AWS_CREDENTIALS_PROVIDER_PATH, role_name
     );
 
     let uri = credentials_provider_url.parse::<Uri>()?;
-    Ok(client.request(Request::new(Method::Get, uri), timeout))
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::empty())?;
+    Ok(client.request(req, timeout))
 }

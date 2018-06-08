@@ -1,8 +1,13 @@
-#![doc(html_logo_url = "https://raw.githubusercontent.com/rusoto/rusoto/master/assets/logo-square.png")]
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/rusoto/rusoto/master/assets/logo-square.png"
+)]
 #![cfg_attr(feature = "unstable", feature(proc_macro))]
 #![cfg_attr(feature = "nightly-testing", feature(plugin))]
 #![cfg_attr(feature = "nightly-testing", plugin(clippy))]
-#![cfg_attr(feature = "nightly-testing", allow(cyclomatic_complexity, used_underscore_binding, ptr_arg, suspicious_else_formatting))]
+#![cfg_attr(
+    feature = "nightly-testing",
+    allow(cyclomatic_complexity, used_underscore_binding, ptr_arg, suspicious_else_formatting)
+)]
 #![allow(dead_code)]
 #![cfg_attr(not(feature = "unstable"), deny(warnings))]
 #![deny(missing_docs)]
@@ -17,26 +22,26 @@ extern crate hyper_tls;
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
-extern crate md5;
+extern crate base64;
 extern crate hex;
 extern crate hmac;
-extern crate base64;
+extern crate md5;
 pub extern crate rusoto_credential as credential;
 extern crate serde;
 extern crate sha2;
 extern crate time;
-extern crate tokio_core;
+extern crate tokio;
 extern crate url;
 extern crate xml;
 
-mod future;
 mod client_inner;
+mod future;
 
 pub mod param;
+pub mod reactor;
 pub mod region;
 pub mod request;
 pub mod signature;
-pub mod reactor;
 
 #[doc(hidden)]
 pub use client_inner::ClientInner;
@@ -47,14 +52,14 @@ pub mod xmlerror;
 #[doc(hidden)]
 pub mod xmlutil;
 
-pub use credential::{AwsCredentials, ChainProvider, ContainerProvider, CredentialsError,
-                     EnvironmentProvider, InstanceMetadataProvider, ProfileProvider,
-                     ProvideAwsCredentials, DefaultCredentialsProvider,
-                     DefaultCredentialsProviderSync, claims,
-                     AutoRefreshingProviderSync, AutoRefreshingProvider,
-                     BaseAutoRefreshingProvider};
+pub use credential::{
+    claims, AutoRefreshingProvider, AutoRefreshingProviderSync, AwsCredentials,
+    BaseAutoRefreshingProvider, ChainProvider, ContainerProvider, CredentialsError,
+    DefaultCredentialsProvider, DefaultCredentialsProviderSync, EnvironmentProvider,
+    InstanceMetadataProvider, ProfileProvider, ProvideAwsCredentials,
+};
 
-pub use region::{ParseRegionError, Region};
-pub use request::{DispatchSignedRequest, HttpResponse, HttpDispatchError, TlsError, HttpClient};
-pub use signature::SignedRequest;
 pub use future::RusotoFuture;
+pub use region::{ParseRegionError, Region};
+pub use request::{DispatchSignedRequest, HttpClient, HttpDispatchError, HttpResponse, TlsError};
+pub use signature::SignedRequest;

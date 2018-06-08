@@ -20,10 +20,12 @@ use futures::{Async, Future, Poll, Stream};
 use hyper::client::connect::Connect;
 use hyper::client::{HttpConnector, ResponseFuture as HyperFutureResponse};
 use hyper::header::{HeaderMap as HyperHeaders, HeaderValue};
-use hyper::Error as HyperError;
 use hyper::Method;
 use hyper::StatusCode;
-use hyper::{Client as HyperClient, Request as HyperRequest, Response as HyperResponse};
+use hyper::{
+    Chunk as HyperChunk, Client as HyperClient, Error as HyperError, Request as HyperRequest,
+    Response as HyperResponse,
+};
 use hyper_tls::HttpsConnector;
 use tokio_core::reactor::{Handle, Timeout};
 
@@ -142,21 +144,21 @@ impl HttpResponse {
         }
     }
 
-    fn from_hyper(hyper_response: HyperResponse) -> HttpResponse {
+    fn from_hyper<T>(hyper_response: HyperResponse<T>) -> HttpResponse
+    where
+        T: Stream<Item = HyperChunk, Error = HyperError> + Send + 'static,
+    {
         let status = hyper_response.status();
-        let headers = Headers::new(
-            hyper_response
-                .headers()
-                .iter()
-                .map(|h| (h.name(), h.value_string())),
-        );
+        let headers = Headers::new(hyper_response.headers().iter().map(|(name, value)| {
+            (
+                name.as_str(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        }));
         let body = hyper_response
             .body()
             .map(|chunk| chunk.as_ref().to_vec())
-            .map_err(|err| match err {
-                HyperError::Io(io_err) => io_err,
-                _ => io::Error::new(io::ErrorKind::Other, err),
-            });
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err));
 
         HttpResponse {
             status: status,
@@ -266,7 +268,7 @@ struct HttpClientPayload {
 
 impl Stream for HttpClientPayload {
     type Item = Vec<u8>;
-    type Error = HyperError;
+    type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.inner {
@@ -277,7 +279,7 @@ impl Stream for HttpClientPayload {
                     Ok(Async::Ready(Some(buffer.split_off(0))))
                 }
             }
-            SignedRequestPayload::Stream(_, ref mut stream) => Ok(stream.poll()?),
+            SignedRequestPayload::Stream(_, ref mut stream) => stream.poll(),
         }
     }
 }
@@ -285,13 +287,12 @@ impl Stream for HttpClientPayload {
 /// Http client for use with AWS services.
 pub struct HttpClient<C = HttpsConnector<HttpConnector>> {
     inner: HyperClient<C, HttpClientPayload>,
-    handle: Handle,
 }
 
 impl HttpClient {
     /// Create a tls-enabled http client.
-    pub fn new(handle: &Handle) -> Result<Self, TlsError> {
-        let connector = match HttpsConnector::new(4, handle) {
+    pub fn new() -> Result<Self, TlsError> {
+        let connector = match HttpsConnector::new(4) {
             Ok(connector) => connector,
             Err(tls_error) => {
                 return Err(TlsError {
@@ -300,7 +301,7 @@ impl HttpClient {
             }
         };
 
-        Ok(Self::from_connector(connector, handle))
+        Ok(Self::from_connector(connector))
     }
 }
 
@@ -309,16 +310,10 @@ where
     C: Connect,
 {
     /// Allows for a custom connector to be used with the HttpClient
-    pub fn from_connector(connector: C, handle: &Handle) -> Self {
-        let inner = HyperClient::configure()
-            .body()
-            .connector(connector)
-            .build(handle);
+    pub fn from_connector(connector: C) -> Self {
+        let inner = HyperClient::configure().body().connector(connector).build();
 
-        HttpClient {
-            inner,
-            handle: handle.clone(),
-        }
+        HttpClient { inner }
     }
 }
 
